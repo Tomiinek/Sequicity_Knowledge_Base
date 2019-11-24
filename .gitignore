@@ -1,0 +1,5 @@
+sequicity/data/glove
+sequicity/.git
+__pycache__
+*.pyc
+sequicity/log/
