@@ -59,10 +59,10 @@ class _Config:
         self.layer_num = 1 #layer number for GRU
         self.dropout_rate = 0.5
         self.epoch_num = 100  # triggered by early stop
-        self.cuda = False #use cuda or not
+        self.cuda = True #use cuda or not
         self.spv_proportion = 100
         self.max_ts = 40 #maximum response decoder steps
-        self.early_stop_count = 3
+        self.early_stop_count = 20
         self.new_vocab = True #create a new vocabulary
         self.model_path = './models/camrest.pkl'
         self.result_path = './results/camrest.csv'
@@ -75,6 +75,8 @@ class _Config:
         self.truncated = False
         self.pretrain = False
         self.emb_trainable = False #make the embedding layer trainiable or not
+
+        # everything other that 1 is considered equal to the number of slots, 3 in this case
         self.num_head = 1 #number of uniquet belief decoders, '=1' means that share the belief decoder among all slots, '=3' means each slot has a distinct belief decoder
 
     def _kvret_init(self):
@@ -102,11 +104,11 @@ class _Config:
         self.layer_num = 1
         self.dropout_rate = 0.5
         self.epoch_num = 100
-        self.cuda = False
+        self.cuda = True
         self.spv_proportion = 100
         self.alpha = 0.0
         self.max_ts = 40
-        self.early_stop_count = 3
+        self.early_stop_count = 20
         self.new_vocab = True
         self.model_path = './models/kvret.pkl'
         self.result_path = './results/kvret.csv'
