@@ -3,3 +3,7 @@ sequicity/.git
 __pycache__
 *.pyc
 sequicity/log/
+FSDM/models/kvret.pkl*
+FSDM/results/
+FSDM/log/
+FSDM/vocab/
