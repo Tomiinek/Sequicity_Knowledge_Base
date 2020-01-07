@@ -406,6 +406,7 @@ class Model:
         sup_cnt, unsup_cnt = 0, 0
         for dial_batch in data_iterator:
             turn_states = {}
+
             for turn_num, turn_batch in enumerate(dial_batch):
                 u_input, u_input_np, z_input, m_input, m_input_np, u_len, \
                 m_len, degree_input, k_input, i_input, r_input, kw_ret, constraint_eos \

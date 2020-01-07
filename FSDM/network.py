@@ -141,13 +141,15 @@ class SimpleDynamicEncoder(nn.Module):
 class BinaryClassification(nn.Module):
     def __init__(self, embed_size, hidden_size, vocab_size, dropout_rate):
         super().__init__()
-        self.gru = nn.GRU(hidden_size + embed_size, hidden_size, dropout=dropout_rate)
-        self.proj = nn.Linear(hidden_size * 2, 1)
+
+        # [change] GRU was replaced by a linear ffnn with one hidden layer, the content of the hidden layer 
+        # is used for later attentions instead of last GRU hidden state
+        self.ffnn_hidden = nn.Linear(hidden_size + embed_size, hidden_size)
+        self.ffnn_out = nn.Linear(hidden_size, 1)
         self.emb = nn.Embedding(vocab_size, embed_size)
         self.emb_ctrl = nn.Linear(embed_size, embed_size)
-        self.attn_u = Attn(hidden_size)
         self.dropout_rate = dropout_rate
-        init_gru(self.gru)
+        self.attn_u = Attn(hidden_size)
 
     def forward(self, u_enc_out, z_tm1, last_hidden):
         context = self.attn_u(last_hidden, u_enc_out)
@@ -155,23 +157,24 @@ class BinaryClassification(nn.Module):
         ctrl_embed_z = self.emb_ctrl(embed_z)
         embed_z = ctrl_embed_z + embed_z
         embed_z = F.dropout(embed_z, self.dropout_rate)
-        gru_in = torch.cat([embed_z, context], 2)
-        gru_out, last_hidden = self.gru(gru_in, last_hidden)
-        gru_out = F.dropout(gru_out, self.dropout_rate)
-        logit = self.proj(torch.cat([gru_out, context], 2)).squeeze(0)
+        ffnn_in = torch.cat([embed_z, context], 2)
+        last_hidden = self.ffnn_hidden(ffnn_in)
+        logit = self.ffnn_out(last_hidden).squeeze(0)
         return logit, last_hidden
 
 
 class SlotBinaryClassification(nn.Module):
     def __init__(self, embed_size, hidden_size, vocab_size, degree_size, dropout_rate):
         super().__init__()
-        self.gru = nn.GRU(hidden_size + embed_size + degree_size, hidden_size, dropout=dropout_rate)
-        self.proj = nn.Linear(hidden_size * 2 + degree_size, 1)
+
+        # [change] GRU was replaced by a linear ffnn with one hidden layer, the content of the hidden layer 
+        # is used for later attentions instead of last GRU hidden state
+        self.ffnn_hidden = nn.Linear(hidden_size + embed_size + degree_size, hidden_size)
+        self.ffnn_out = nn.Linear(hidden_size, 1)
         self.emb = nn.Embedding(vocab_size, embed_size)
         self.emb_ctrl = nn.Linear(embed_size, embed_size)
         self.attn_u = Attn(hidden_size)
         self.dropout_rate = dropout_rate
-        init_gru(self.gru)
 
     def forward(self, u_enc_out, z_tm1, last_hidden, degree_input):
         context = self.attn_u(last_hidden, u_enc_out)
@@ -179,18 +182,16 @@ class SlotBinaryClassification(nn.Module):
         ctrl_embed_z = self.emb_ctrl(embed_z)
         embed_z = ctrl_embed_z + embed_z
         embed_z = F.dropout(embed_z, self.dropout_rate)
-        gru_in = torch.cat([embed_z, context, degree_input], 2)
-        gru_out, last_hidden = self.gru(gru_in, last_hidden)
-        gru_out = F.dropout(gru_out, self.dropout_rate)
-        logit = self.proj(torch.cat([gru_out, context, degree_input], 2)).squeeze(0)
+        ffnn_in = torch.cat([embed_z, context, degree_input], 2)
+        last_hidden = self.ffnn_hidden(ffnn_in)
+        logit = self.ffnn_out(last_hidden).squeeze(0)
         return logit, last_hidden
-
 
 class BSpanDecoder(nn.Module):
     def __init__(self, embed_size, hidden_size, vocab_size, dropout_rate):
         super().__init__()
-        self.gru = nn.GRU(hidden_size + embed_size, hidden_size, dropout=dropout_rate)
-        self.proj = nn.Linear(hidden_size * 2, vocab_size)
+        self.ffnn_hidden = nn.Linear(hidden_size * 2 + embed_size, hidden_size)
+        self.ffnn_out = nn.Linear(hidden_size, vocab_size)
         self.emb = nn.Embedding(vocab_size, embed_size)
         self.emb_ctrl = nn.Linear(embed_size, embed_size)
         self.attn_u = Attn(hidden_size)
@@ -198,7 +199,6 @@ class BSpanDecoder(nn.Module):
         self.proj_copy1 = nn.Linear(hidden_size, hidden_size)
         self.proj_copy2 = nn.Linear(hidden_size, hidden_size)
         self.dropout_rate = dropout_rate
-        init_gru(self.gru)
 
     def forward(self, u_enc_out, z_tm1, last_hidden, u_input_np, pv_z_enc_out, prev_z_input_np, u_emb, pv_z_emb):
 
@@ -220,14 +220,16 @@ class BSpanDecoder(nn.Module):
         else:
             context = self.attn_u(query, u_enc_out)
         '''
-        gru_in = torch.cat([embed_z, context], 2)
-        gru_out, last_hidden = self.gru(gru_in, last_hidden)
-        gru_out = F.dropout(gru_out, self.dropout_rate)
-        gen_score = self.proj(torch.cat([gru_out, context], 2)).squeeze(0)
+
+        # [change] GRU was replaced by a linear ffnn with one hidden layer, the content of the hidden layer 
+        # is used for later attentions instead of GRU hidden states
+        ffnn_in = torch.cat([embed_z, context, last_hidden], 2)
+        last_hidden = self.ffnn_hidden(ffnn_in)
+        gen_score = self.ffnn_out(last_hidden).squeeze(0)
         gen_score = F.dropout(gen_score, self.dropout_rate)
         u_copy_score = torch.tanh(self.proj_copy1(u_enc_out.transpose(0, 1)))  # [B,T,H]
         # stable version of copynet
-        u_copy_score = torch.matmul(u_copy_score, gru_out.squeeze(0).unsqueeze(2)).squeeze(2)
+        u_copy_score = torch.matmul(u_copy_score, last_hidden.squeeze(0).unsqueeze(2)).squeeze(2)
         u_copy_score = u_copy_score.cpu()
         u_copy_score_max = torch.max(u_copy_score, dim=1, keepdim=True)[0]
         u_copy_score = torch.exp(u_copy_score - u_copy_score_max)  # [B,T]
@@ -244,7 +246,7 @@ class BSpanDecoder(nn.Module):
         else:
             sparse_pv_z_input = Variable(get_sparse_input_aug(prev_z_input_np), requires_grad=False)
             pv_z_copy_score = torch.tanh(self.proj_copy2(pv_z_enc_out.transpose(0, 1)))  # [B,T,H]
-            pv_z_copy_score = torch.matmul(pv_z_copy_score, gru_out.squeeze(0).unsqueeze(2)).squeeze(2)
+            pv_z_copy_score = torch.matmul(pv_z_copy_score, last_hidden.squeeze(0).unsqueeze(2)).squeeze(2)
             pv_z_copy_score = pv_z_copy_score.cpu()
             pv_z_copy_score_max = torch.max(pv_z_copy_score, dim=1, keepdim=True)[0]
             pv_z_copy_score = torch.exp(pv_z_copy_score - pv_z_copy_score_max)  # [B,T]
@@ -258,7 +260,8 @@ class BSpanDecoder(nn.Module):
                                                        scores[:, 2 * cfg.vocab_size + u_input_np.shape[0]:]
             proba = gen_score + u_copy_score[:, :cfg.vocab_size] + pv_z_copy_score[:, :cfg.vocab_size]  # [B,V]
             proba = torch.cat([proba, pv_z_copy_score[:, cfg.vocab_size:], u_copy_score[:, cfg.vocab_size:]], 1)
-        return gru_out, last_hidden, proba
+
+        return last_hidden, proba
 
 
 class ResponseDecoder(nn.Module):
@@ -468,14 +471,14 @@ class FSDM(nn.Module):
                 else:
                     z_idx = k_index
                 for t in range(i_length):
-                    k_dec_out, k_last_hidden, proba = \
+                    k_last_hidden, proba = \
                             self.z_decoders[z_idx](u_enc_out=u_enc_out, u_input_np=u_input_np,  # self.z_decoders[k_index]
                                                    z_tm1=k_tm1, last_hidden=k_last_hidden,
                                                    pv_z_enc_out=pv_z_enc_out, prev_z_input_np=prev_z_input_np,
                                                    u_emb=u_emb, pv_z_emb=pv_z_emb)
 
                     k_proba.append(proba.unsqueeze(0))
-                    k_dec_outs.append(k_dec_out)
+                    k_dec_outs.append(k_last_hidden)
                     k_tm1 = k_i_input[t].unsqueeze(0)
                 i_proba.append(torch.cat(k_proba, dim=0))
                 i_dec_outs.append(torch.cat(k_dec_outs, dim=0))
@@ -489,6 +492,7 @@ class FSDM(nn.Module):
             #
             req_hiddens = []
             req_logits = []
+
             for req_idx, req_key in enumerate(requestable_key):
                 req_tm = req_key.unsqueeze(0)
                 if prev_z_input is not None:
@@ -671,12 +675,12 @@ class FSDM(nn.Module):
         batch_size = u_enc_out.size(1)
         hiddens = [None] * batch_size
         for t in range(length):
-            pz_dec_out, last_hidden, proba = \
+            last_hidden, proba = \
                 self.z_decoders[module_idx](u_enc_out=u_enc_out, u_input_np=u_input_np,
                                             z_tm1=z_tm1, last_hidden=last_hidden, pv_z_enc_out=pv_z_enc_out,
                                             prev_z_input_np=prev_z_input_np, u_emb=u_emb, pv_z_emb=pv_z_emb)
             pz_proba.append(proba)
-            pz_dec_outs.append(pz_dec_out)
+            pz_dec_outs.append(last_hidden)
             z_proba, z_index = torch.topk(proba, 1)  # [B,1]
             z_index = z_index.data.view(-1)
             decoded.append(z_index.clone())
