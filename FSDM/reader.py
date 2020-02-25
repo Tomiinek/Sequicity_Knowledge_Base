@@ -824,6 +824,8 @@ class KvretReader(_ReaderBase):
                             entity_dict[entity.split()[0]] = entity_type
                             self.abbr_dict[entity.split()[0]] = entity
         self.entity_dict = entity_dict
+        
+
 
     def Lei_db_degree(self, constraints, ori_constraints, items, intent):
         days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']

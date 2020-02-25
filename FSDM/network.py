@@ -25,6 +25,8 @@ import copy, random
 
 from reader import pad_sequences
 
+from torch.nn.functional import pad
+
 
 def cuda_(var):
     return var.cuda() if cfg.cuda else var
@@ -142,24 +144,32 @@ class BinaryClassification(nn.Module):
     def __init__(self, embed_size, hidden_size, vocab_size, dropout_rate):
         super().__init__()
 
-        # [change] GRU was replaced by a linear ffnn with one hidden layer, the content of the hidden layer 
+        # GRU was replaced by a linear ffnn with one hidden layer, the content of the hidden layer 
         # is used for later attentions instead of last GRU hidden state
         self.ffnn_hidden = nn.Linear(hidden_size + embed_size, hidden_size)
+        self.act_fn = nn.ReLU()
         self.ffnn_out = nn.Linear(hidden_size, 1)
+
         self.emb = nn.Embedding(vocab_size, embed_size)
         self.emb_ctrl = nn.Linear(embed_size, embed_size)
+
         self.dropout_rate = dropout_rate
         self.attn_u = Attn(hidden_size)
 
     def forward(self, u_enc_out, z_tm1, last_hidden):
         context = self.attn_u(last_hidden, u_enc_out)
+
         embed_z = self.emb(z_tm1)
         ctrl_embed_z = self.emb_ctrl(embed_z)
         embed_z = ctrl_embed_z + embed_z
         embed_z = F.dropout(embed_z, self.dropout_rate)
+
         ffnn_in = torch.cat([embed_z, context], 2)
+
         last_hidden = self.ffnn_hidden(ffnn_in)
+        last_hidden = self.act_fn(last_hidden)
         logit = self.ffnn_out(last_hidden).squeeze(0)
+
         return logit, last_hidden
 
 
@@ -167,41 +177,74 @@ class SlotBinaryClassification(nn.Module):
     def __init__(self, embed_size, hidden_size, vocab_size, degree_size, dropout_rate):
         super().__init__()
 
-        # [change] GRU was replaced by a linear ffnn with one hidden layer, the content of the hidden layer 
+        # GRU was replaced by a linear ffnn with one hidden layer, the content of the hidden layer 
         # is used for later attentions instead of last GRU hidden state
         self.ffnn_hidden = nn.Linear(hidden_size + embed_size + degree_size, hidden_size)
+        self.act_fn = nn.ReLU()
         self.ffnn_out = nn.Linear(hidden_size, 1)
+
         self.emb = nn.Embedding(vocab_size, embed_size)
         self.emb_ctrl = nn.Linear(embed_size, embed_size)
+
         self.attn_u = Attn(hidden_size)
         self.dropout_rate = dropout_rate
 
     def forward(self, u_enc_out, z_tm1, last_hidden, degree_input):
         context = self.attn_u(last_hidden, u_enc_out)
+
         embed_z = self.emb(z_tm1)
         ctrl_embed_z = self.emb_ctrl(embed_z)
         embed_z = ctrl_embed_z + embed_z
         embed_z = F.dropout(embed_z, self.dropout_rate)
+
         ffnn_in = torch.cat([embed_z, context, degree_input], 2)
+
         last_hidden = self.ffnn_hidden(ffnn_in)
+        last_hidden = self.act_fn(last_hidden)
         logit = self.ffnn_out(last_hidden).squeeze(0)
+
         return logit, last_hidden
 
 class BSpanDecoder(nn.Module):
-    def __init__(self, embed_size, hidden_size, vocab_size, dropout_rate):
+    def __init__(self, embed_size, hidden_size, vocab_size, dropout_rate, slot_vocab, slot_idx, vocab=None):
         super().__init__()
+        self.slot_idx = slot_idx
+        self.slot_vocab = slot_vocab
+        self.slot_vocab_size = len(slot_vocab)
+
         self.ffnn_hidden = nn.Linear(hidden_size * 2 + embed_size, hidden_size)
-        self.ffnn_out = nn.Linear(hidden_size, vocab_size)
+        self.act_fn = nn.ReLU()
+        self.ffnn_out = nn.Linear(hidden_size, self.slot_vocab_size)
+
         self.emb = nn.Embedding(vocab_size, embed_size)
         self.emb_ctrl = nn.Linear(embed_size, embed_size)
+
         self.attn_u = Attn(hidden_size)
         self.proj_query = nn.Linear(hidden_size + embed_size, hidden_size)
         self.proj_copy1 = nn.Linear(hidden_size, hidden_size)
         self.proj_copy2 = nn.Linear(hidden_size, hidden_size)
         self.dropout_rate = dropout_rate
+        self.vocab = vocab
+        self.vocab_size = vocab_size
 
-    def forward(self, u_enc_out, z_tm1, last_hidden, u_input_np, pv_z_enc_out, prev_z_input_np, u_emb, pv_z_emb):
+        self.slot_vocab_map = self._create_slot_vocab_map()
 
+    def _create_slot_vocab_map(self):
+        # creates a matrix with token indices for each slot value (up to cfg.inf_length, shorter slot values are padded)
+        s_slot_vocab = [x.split() for x in self.slot_vocab]
+        max_slot_value_len = max([len(x) for x in s_slot_vocab])
+        i_length = cfg.inf_length
+
+        s_slot_vocab_idx = [self.vocab.sentence_encode(x) for x in s_slot_vocab]
+        slot_vocab_map = pad_sequences(s_slot_vocab_idx, padding='post')
+        slot_vocab_map = torch.tensor(slot_vocab_map, dtype=torch.long)
+        slot_vocab_map = pad(slot_vocab_map, pad=(0, i_length - max_slot_value_len), mode='constant', value=0)
+        slot_vocab_map = cuda_(slot_vocab_map)
+
+        return slot_vocab_map.transpose(1,0)
+
+
+    def forward(self, u_enc_out, z_tm1, last_hidden, u_input_np, pv_z_enc_out, prev_z_input_np, u_emb, pv_z_emb, i_length):
         sparse_u_input = Variable(get_sparse_input_aug(u_input_np), requires_grad=False)
 
         if pv_z_enc_out is not None:
@@ -220,48 +263,80 @@ class BSpanDecoder(nn.Module):
         else:
             context = self.attn_u(query, u_enc_out)
         '''
-
-        # [change] GRU was replaced by a linear ffnn with one hidden layer, the content of the hidden layer 
-        # is used for later attentions instead of GRU hidden states
+        # generate scores for slot values of this decoder
         ffnn_in = torch.cat([embed_z, context, last_hidden], 2)
         last_hidden = self.ffnn_hidden(ffnn_in)
+        last_hidden = self.act_fn(last_hidden)
+
         gen_score = self.ffnn_out(last_hidden).squeeze(0)
         gen_score = F.dropout(gen_score, self.dropout_rate)
-        u_copy_score = torch.tanh(self.proj_copy1(u_enc_out.transpose(0, 1)))  # [B,T,H]
-        # stable version of copynet
-        u_copy_score = torch.matmul(u_copy_score, last_hidden.squeeze(0).unsqueeze(2)).squeeze(2)
-        u_copy_score = u_copy_score.cpu()
-        u_copy_score_max = torch.max(u_copy_score, dim=1, keepdim=True)[0]
-        u_copy_score = torch.exp(u_copy_score - u_copy_score_max)  # [B,T]
-        u_copy_score = torch.log(torch.bmm(u_copy_score.unsqueeze(1), sparse_u_input)).squeeze(
-            1) + u_copy_score_max  # [B,V]
-        u_copy_score = cuda_(u_copy_score)
-        if pv_z_enc_out is None:
-            u_copy_score = F.dropout(u_copy_score, self.dropout_rate)
-            scores = F.softmax(torch.cat([gen_score, u_copy_score], dim=1), dim=1)
-            gen_score, u_copy_score = scores[:, :cfg.vocab_size], \
-                                      scores[:, cfg.vocab_size:]
-            proba = gen_score + u_copy_score[:, :cfg.vocab_size]  # [B,V]
-            proba = torch.cat([proba, u_copy_score[:, cfg.vocab_size:]], 1)
-        else:
-            sparse_pv_z_input = Variable(get_sparse_input_aug(prev_z_input_np), requires_grad=False)
-            pv_z_copy_score = torch.tanh(self.proj_copy2(pv_z_enc_out.transpose(0, 1)))  # [B,T,H]
-            pv_z_copy_score = torch.matmul(pv_z_copy_score, last_hidden.squeeze(0).unsqueeze(2)).squeeze(2)
-            pv_z_copy_score = pv_z_copy_score.cpu()
-            pv_z_copy_score_max = torch.max(pv_z_copy_score, dim=1, keepdim=True)[0]
-            pv_z_copy_score = torch.exp(pv_z_copy_score - pv_z_copy_score_max)  # [B,T]
-            pv_z_copy_score = torch.log(torch.bmm(pv_z_copy_score.unsqueeze(1), sparse_pv_z_input)).squeeze(
-                1) + pv_z_copy_score_max  # [B,V]
-            pv_z_copy_score = cuda_(pv_z_copy_score)
-            scores = F.softmax(torch.cat([gen_score, u_copy_score, pv_z_copy_score], dim=1), dim=1)
-            gen_score, u_copy_score, pv_z_copy_score = scores[:, :cfg.vocab_size], \
-                                                       scores[:,
-                                                       cfg.vocab_size:2 * cfg.vocab_size + u_input_np.shape[0]], \
-                                                       scores[:, 2 * cfg.vocab_size + u_input_np.shape[0]:]
-            proba = gen_score + u_copy_score[:, :cfg.vocab_size] + pv_z_copy_score[:, :cfg.vocab_size]  # [B,V]
-            proba = torch.cat([proba, pv_z_copy_score[:, cfg.vocab_size:], u_copy_score[:, cfg.vocab_size:]], 1)
 
-        return last_hidden, proba
+        # expected output from the (former) RNN is for i_length timesteps - lets simulate it
+        proba_list = []
+        for i in range(i_length):
+            # distribute the scores of values to their respective positions in the vocabulary
+            gen_score_full = gen_score.new_zeros((gen_score.shape[0], self.vocab_size))
+
+            # copy the scores of slot values to their i-th token
+            # gen_score_full[:, self.slot_vocab_map[i]] += gen_score
+
+            # workaround because the code above does not do what is intended if the indices are repeated
+            for j, column in enumerate(self.slot_vocab_map[i].tolist()):
+                gen_score_full[:, column] += gen_score[:, j]
+
+            # ignore the copynet
+            proba = F.softmax(gen_score_full, dim=1)
+
+
+            # # copy probabilities of encoder outputs
+            # u_copy_score = torch.tanh(self.proj_copy1(u_enc_out.transpose(0, 1)))  # [B,T,H]
+
+            # # multiply the last hidden state of the encoder by copy probabilities
+            # u_copy_score = torch.matmul(u_copy_score, last_hidden.squeeze(0).unsqueeze(2)).squeeze(2)
+            # u_copy_score = u_copy_score.cpu()
+
+            # # normalization?
+            # u_copy_score_max = torch.max(u_copy_score, dim=1, keepdim=True)[0]
+            # u_copy_score = torch.exp(u_copy_score - u_copy_score_max)  # [B,T]
+            # u_copy_score = torch.log(torch.bmm(u_copy_score.unsqueeze(1), sparse_u_input)).squeeze(
+            #     1) + u_copy_score_max  # [B,V]
+            # u_copy_score = cuda_(u_copy_score)
+
+            # # previous encoder output (-> previous turn?)
+            # if pv_z_enc_out is None:
+            #     u_copy_score = F.dropout(u_copy_score, self.dropout_rate)
+
+            #     # joint softmax over generation scores and copy scores
+            #     scores = F.softmax(torch.cat([gen_score_full, u_copy_score], dim=1), dim=1)
+
+            #     # re-splitting generation scores and copy scores
+            #     gen_score_full, u_copy_score = scores[:, :self.vocab_size], \
+            #                               scores[:, self.vocab_size:]
+
+            #     # summing the probability of generated tokens together with their copy probability from the encoder
+            #     proba = gen_score_full + u_copy_score[:, :self.vocab_size]  # [B,V]
+            #     proba = torch.cat([proba, u_copy_score[:, cfg.vocab_size:]], 1)
+            # else:
+            #     sparse_pv_z_input = Variable(get_sparse_input_aug(prev_z_input_np), requires_grad=False)
+            #     pv_z_copy_score = torch.tanh(self.proj_copy2(pv_z_enc_out.transpose(0, 1)))  # [B,T,H]
+            #     pv_z_copy_score = torch.matmul(pv_z_copy_score, last_hidden.squeeze(0).unsqueeze(2)).squeeze(2)
+            #     pv_z_copy_score = pv_z_copy_score.cpu()
+            #     pv_z_copy_score_max = torch.max(pv_z_copy_score, dim=1, keepdim=True)[0]
+            #     pv_z_copy_score = torch.exp(pv_z_copy_score - pv_z_copy_score_max)  # [B,T]
+            #     pv_z_copy_score = torch.log(torch.bmm(pv_z_copy_score.unsqueeze(1), sparse_pv_z_input)).squeeze(
+            #         1) + pv_z_copy_score_max  # [B,V]
+            #     pv_z_copy_score = cuda_(pv_z_copy_score)
+            #     scores = F.softmax(torch.cat([gen_score_full, u_copy_score, pv_z_copy_score], dim=1), dim=1)
+            #     gen_score_full, u_copy_score, pv_z_copy_score = scores[:, :self.vocab_size], \
+            #                                                scores[:,
+            #                                                self.vocab_size:2 * self.vocab_size + u_input_np.shape[0]], \
+            #                                                scores[:, 2 * self.vocab_size + u_input_np.shape[0]:]
+            #     proba = gen_score_full + u_copy_score[:, :self.vocab_size] + pv_z_copy_score[:, :self.vocab_size]  # [B,V]
+            #     proba = torch.cat([proba, pv_z_copy_score[:, self.vocab_size:], u_copy_score[:, self.vocab_size:]], 1)
+
+            proba_list.append(proba)
+
+        return last_hidden, proba_list
 
 
 class ResponseDecoder(nn.Module):
@@ -318,6 +393,7 @@ class ResponseDecoder(nn.Module):
         z_copy_score = z_copy_score.cpu()
         z_copy_score_max = torch.max(z_copy_score, dim=1, keepdim=True)[0]
         z_copy_score = torch.exp(z_copy_score - z_copy_score_max)  # [B,T]
+
         z_copy_score = torch.log(torch.bmm(z_copy_score.unsqueeze(1), sparse_z_input)).squeeze(
             1) + z_copy_score_max  # [B,V]
         z_copy_score = cuda_(z_copy_score)
@@ -335,6 +411,7 @@ class FSDM(nn.Module):
                  max_ts, num_head, separate_enc, beam_search=False, teacher_force=100, **kwargs):
         super().__init__()
         self.vocab = kwargs['vocab']
+        self.entity_dict = kwargs['entity_dict']
         self.separate_enc = separate_enc
         self.emb = nn.Embedding(vocab_size, embed_size)
         self.dec_gru = nn.GRU(degree_size + embed_size + hidden_size * 2, hidden_size,
@@ -348,8 +425,27 @@ class FSDM(nn.Module):
             self.enc_w.data.uniform_(-stdv, stdv)
             
         self.u_encoder = SimpleDynamicEncoder(vocab_size, embed_size, hidden_size, layer_num, dropout_rate)
-        self.z_decoders = nn.ModuleList(
-                [BSpanDecoder(embed_size, hidden_size, vocab_size, dropout_rate) for _ in range(num_head)])
+
+        z_decoders = {}
+        #TODO camrest
+        informable_slots = ['date', 'location', 'weather_attribute', 'poi_type', 'distance', 'event', 'time', 'agenda', 'party', 'room']
+        assert len(informable_slots) == num_head, "cfg.num_head has to be equal to the number of informable slots. Not yet implemented for CamRest"
+
+        for i in range(num_head):
+            slot_name = informable_slots[i]
+            slot_idx = self.vocab.encode(slot_name)
+            slot_vocab = list({x[0] + f" EOS_{slot_name}" for x in self.entity_dict.items() if x[1] == slot_name})
+            slot_vocab.append(f"EOS_{slot_name}")
+
+            print(f"BSpanDecoder {slot_name}")
+            print(f"vocab_size: {len(slot_vocab)}")
+            print(f"vocab: {slot_vocab}")
+
+            z_decoder = BSpanDecoder(embed_size, hidden_size, vocab_size, dropout_rate, slot_vocab, slot_idx, self.vocab)
+            z_decoders[str(slot_idx)] = z_decoder
+        
+        self.z_decoders = nn.ModuleDict(z_decoders)
+
         self.req_classifiers = BinaryClassification(embed_size, hidden_size, vocab_size, dropout_rate)
         self.res_classifiers = SlotBinaryClassification(embed_size, hidden_size, vocab_size, cfg.degree_size,
                                                         dropout_rate)
@@ -384,12 +480,16 @@ class FSDM(nn.Module):
                                   i_input=i_input, r_input=r_input, mode='train',
                                   turn_states=turn_states, degree_input=degree_input, u_input_np=u_input_np,
                                   m_input_np=m_input_np, **kwargs)
+
             loss, pr_loss, m_loss, requested_7_loss, response_7_loss = self.supervised_loss(torch.log(pz_proba),
                                                                                             torch.log(pm_dec_proba),
                                                                                             z_input, m_input,
                                                                                             p_requested, p_response,
                                                                                             requested_7, response_7,
                                                                                             loss_weights)
+
+            # if torch.isnan(pr_loss):
+
             return loss, pr_loss, m_loss, turn_states, requested_7_loss, response_7_loss
 
         elif mode == 'test':
@@ -459,27 +559,44 @@ class FSDM(nn.Module):
             hiddens = [None] * batch_size
             i_proba = []
             i_dec_outs = []
+
             for k_index, k_batch in enumerate(k_input):  # batch of one key
+
+                # i_input = correct values for each slot
                 i_length = i_input.size(1)
                 k_i_input = i_input[k_index]
                 k_tm1 = k_batch.unsqueeze(0)
+
                 k_proba = []
                 k_dec_outs = []
                 k_last_hidden = last_hidden
-                if self.num_head == 1:
-                    z_idx = -1
-                else:
-                    z_idx = k_index
-                for t in range(i_length):
-                    k_last_hidden, proba = \
-                            self.z_decoders[z_idx](u_enc_out=u_enc_out, u_input_np=u_input_np,  # self.z_decoders[k_index]
-                                                   z_tm1=k_tm1, last_hidden=k_last_hidden,
-                                                   pv_z_enc_out=pv_z_enc_out, prev_z_input_np=prev_z_input_np,
-                                                   u_emb=u_emb, pv_z_emb=pv_z_emb)
 
-                    k_proba.append(proba.unsqueeze(0))
-                    k_dec_outs.append(k_last_hidden)
-                    k_tm1 = k_i_input[t].unsqueeze(0)
+                # take the slot idx (all slot idxs should be the same for each batch item)
+                # and use the associated decoder to decode the slot value
+                assert all(k_batch == k_batch[0])
+
+                # dict is indexed by slot idx
+                z_idx = str(k_batch[0].item())
+
+                # if self.num_head == 1:
+                #     z_idx = -1
+                # else:
+                #     z_idx = k_index
+               
+                # i_length = max len of bspan content, the rest padded by 0's
+                k_last_hidden, proba = \
+                        self.z_decoders[z_idx](u_enc_out=u_enc_out, u_input_np=u_input_np,  # self.z_decoders[k_index]
+                                               z_tm1=k_tm1, last_hidden=k_last_hidden,
+                                               pv_z_enc_out=pv_z_enc_out, prev_z_input_np=prev_z_input_np,
+                                               u_emb=u_emb, pv_z_emb=pv_z_emb, i_length=i_length)
+                
+                # unroll all the 'timesteps' (separate probabilities for every slot value token)
+                for t in range(i_length):
+                    k_proba.append(proba[t].unsqueeze(0))
+                    k_dec_outs.append(k_last_hidden) # sic
+
+                # k_tm1 = k_i_input[t].unsqueeze(0)
+
                 i_proba.append(torch.cat(k_proba, dim=0))
                 i_dec_outs.append(torch.cat(k_dec_outs, dim=0))
 
@@ -508,6 +625,7 @@ class FSDM(nn.Module):
 
             res_hiddens = []
             res_logits = []
+
             belief_hiddens = torch.cat((concat_i_dec_outs, req_hiddens), dim=0)
             for res_idx, res_key in enumerate(requestable_slot):
                 res_tm = res_key.unsqueeze(0)
@@ -522,12 +640,16 @@ class FSDM(nn.Module):
             requested_7 = kwargs.get('requested_7').squeeze(2).cpu().data.numpy()  # 7, batchsize, 1
             response_7 = kwargs.get('response_7').squeeze(2).cpu().data.numpy()  # 7, batchsize, 1
             pz_dec_outs = torch.cat([pz_dec_outs, req_hiddens, res_hiddens], dim=0)  # seqlen, batchsize, hidden
+
+
             z_keyslot_proba = np.concatenate((np.ones((z_input_np.shape[0], batch_size)), requested_7, response_7),
                                              axis=0)  # seqlen, batchsize
             z_keyslot_input_np_ = np.concatenate((z_input_np, requestable_key_np, requestable_slot_np), axis=0)
+
             pm_dec_proba, m_dec_outs = [], []
             m_length = m_input.size(0)  # Tm
             for t in range(m_length):
+                # according to default config always true
                 teacher_forcing = toss_(self.teacher_force)
                 proba, last_hidden, dec_out = self.m_decoder(pz_dec_outs, u_enc_out, u_input_np, m_tm1,
                                                              degree_input, last_hidden, z_keyslot_input_np_,
@@ -540,17 +662,29 @@ class FSDM(nn.Module):
                 pm_dec_proba.append(proba)
                 m_dec_outs.append(dec_out)
             pm_dec_proba = torch.stack(pm_dec_proba, dim=0)  # [T,B,V]
+
             return pz_proba, pm_dec_proba, None, req_logits, res_logits
+        # valid / test
         else:
             i_wordindex = []
             i_dec_outs = []
+
+            # for each informable slot (=slot in a bspan) call the decoder with the slot and get cfg.inf_length (default=5) outputs
             for k_index, k_batch in enumerate(k_input):  # batch of one key
                 k_tm1 = k_batch.unsqueeze(0)
                 k_last_hidden = last_hidden
-                if self.num_head == 1:
-                    m_idx = -1
-                else:
-                    m_idx = k_index
+                # if self.num_head == 1:
+                #     m_idx = -1
+                # else:
+                #     m_idx = k_index
+
+                # take the slot idx (all slot idxs should be the same for each batch item)
+                # and use the associated decoder to decode the slot value
+                assert all(k_batch == k_batch[0])
+
+                # dict is indexed by slot idx
+                m_idx = str(k_batch[0].item())
+
                 k_dec_outs, k_wordindex, k_last_hidden = \
                     self.bspan_decoder(u_enc_out=u_enc_out, z_tm1=k_tm1, last_hidden=k_last_hidden,
                                        u_input_np=u_input_np,
@@ -567,6 +701,8 @@ class FSDM(nn.Module):
 
             req_hiddens = []
             req_logits = []
+
+            # for each requestable slot call the decoder and get a single logit (for each item in the batch)
             for req_idx, req_key in enumerate(requestable_key):
                 req_tm = req_key.unsqueeze(0)
                 if prev_z_input is not None:
@@ -577,12 +713,15 @@ class FSDM(nn.Module):
                                                              z_tm1=req_tm)
                 req_logits.append(req_logit)  # batchsize, 1
                 req_hiddens.append(req_hidden)  # 1, batchsize, hidden
-            req_logits = torch.cat(req_logits, dim=1)  # batchsize, 7
+            req_logits = torch.cat(req_logits, dim=1)  # batchsize, 7   # WTF why 7 (...and it's not true anyway)
             req_hiddens = torch.cat(req_hiddens, dim=0)  # 7, batchsize, hidden
 
             res_hiddens = []
             res_logits = []
             belief_hiddens = torch.cat((pz_dec_outs, req_hiddens), dim=0)
+
+
+            # for each response slot call the decoder and get a single logit (for each item in the batch)
             for res_idx, res_key in enumerate(requestable_slot):
                 res_tm = res_key.unsqueeze(0)
                 res_logit, res_hidden = self.res_classifiers(u_enc_out=belief_hiddens,
@@ -594,27 +733,41 @@ class FSDM(nn.Module):
             res_logits = torch.cat(res_logits, dim=1)
             res_hiddens = torch.cat(res_hiddens, dim=0)
 
+            # concatenate results from all 3 decoders
             pz_dec_outs = torch.cat([pz_dec_outs, req_hiddens, res_hiddens])  # seqlen, batchsize, hidden
 
+            # apply sigmoids on logits
             req_out_np = (torch.sigmoid(req_logits)).cpu().data.numpy().transpose(1, 0)  # 7,batchsize
             res_out_np = (torch.sigmoid(res_logits)).cpu().data.numpy().transpose(1, 0)  # 7,batchsize
+
+            # matrix of copy probabilities: 1's for decoded informable slots & predicted probabilities for requestable and response slots
             z_keyslot_proba = np.concatenate(
                 (np.ones((cfg.inf_length * k_input.size(0), batch_size)), req_out_np, res_out_np),
                 axis=0)  # seqlen, batchsize
 
             bspan_index = []  # batchsize, seqlen
+
+            # for each item in batch
             for b_idx in range(k_input.size(1)):
+                # decode a belief span
                 bspan = []
+
+                # by concatenating all that was decoded previously
                 for k_idx in range(k_input.size(0)):
                     bspan += [_.cpu().item() for _ in i_wordindex[k_idx][b_idx]]
 
+                # ...together with all slot names that are requested (according to the probabilities) - wtf??
                 for key_idx, proba in zip(requestable_key_np[:, b_idx].tolist(), req_out_np[:, b_idx].tolist()):
                     if proba >= 0.5:
                         bspan.append(key_idx)
+
+                # ...finishing it all with EOS_Z2
                 bspan.append(self.vocab.encode('EOS_Z2'))
                 bspan_index.append(bspan)
 
             pz_index = []  # for response decode
+
+            # do the same as in the previous loop, just ignore the probabilities - wtf^2??
             for b_idx in range(k_input.size(1)):
                 bspan = []
                 for k_idx in range(k_input.size(0)):
@@ -622,6 +775,7 @@ class FSDM(nn.Module):
                 bspan += requestable_key_np[:, b_idx].tolist() + requestable_slot_np[:, b_idx].tolist()
                 pz_index.append(bspan)
 
+            # db search? seems not used in test mode
             if reader != None:
                 batch_cons = []
                 for b_idx in range(k_input.size(1)):
@@ -674,27 +828,39 @@ class FSDM(nn.Module):
         decoded = []
         batch_size = u_enc_out.size(1)
         hiddens = [None] * batch_size
-        for t in range(length):
-            last_hidden, proba = \
+
+        last_hidden, proba = \
                 self.z_decoders[module_idx](u_enc_out=u_enc_out, u_input_np=u_input_np,
                                             z_tm1=z_tm1, last_hidden=last_hidden, pv_z_enc_out=pv_z_enc_out,
-                                            prev_z_input_np=prev_z_input_np, u_emb=u_emb, pv_z_emb=pv_z_emb)
-            pz_proba.append(proba)
+                                            prev_z_input_np=prev_z_input_np, u_emb=u_emb, pv_z_emb=pv_z_emb, i_length=length)
+
+        for t in range(length):
+            pz_proba.append(proba[t])
             pz_dec_outs.append(last_hidden)
-            z_proba, z_index = torch.topk(proba, 1)  # [B,1]
+            z_proba, z_index = torch.topk(proba[t], 1)  # [B,1]
+
+            # decoded tokens of bspan in current step
             z_index = z_index.data.view(-1)
+
             decoded.append(z_index.clone())
+
+            # replace words w/ index higher than vocab_size by unknowns
             for i in range(z_index.size(0)):
                 if z_index[i] >= cfg.vocab_size:
                     z_index[i] = 2  # unk
             z_np = z_tm1.view(-1).cpu().data.numpy()
+
+            # after EOS_Z2 is encountered, save the last hidden state (done for each item in the batch separately)
             for i in range(batch_size):
                 if z_np[i] == self.vocab.encode('EOS_Z2'):
                     hiddens[i] = last_hidden[:, i, :]
             z_tm1 = cuda_(Variable(z_index).view(1, -1))
+
+        # fill in the rest of the hidden states by states from the last step
         for i in range(batch_size):
             if hiddens[i] is None:
                 hiddens[i] = last_hidden[:, i, :]
+
         last_hidden = torch.stack(hiddens, dim=1)
         decoded = torch.stack(decoded, dim=0).transpose(0, 1)
         decoded = list(decoded)
@@ -841,6 +1007,7 @@ class FSDM(nn.Module):
 
         loss = loss_weights[0] * pr_loss + loss_weights[1] * requested_loss + loss_weights[2] * response_loss + \
                loss_weights[3] * m_loss
+
         return loss, pr_loss, m_loss, requested_loss, response_loss
 
     def self_adjust(self, epoch):

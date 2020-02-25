@@ -75,8 +75,6 @@ class _Config:
         self.truncated = False
         self.pretrain = False
         self.emb_trainable = False #make the embedding layer trainiable or not
-
-        # everything other that 1 is considered equal to the number of slots, 3 in this case
         self.num_head = 1 #number of uniquet belief decoders, '=1' means that share the belief decoder among all slots, '=3' means each slot has a distinct belief decoder
 
     def _kvret_init(self):
@@ -85,9 +83,9 @@ class _Config:
         self.intent = 'all'
         self.vocab_size = 1414
         self.embedding_size = 50
-        self.hidden_size = 50
+        self.hidden_size = 256
         self.split = None
-        self.lr = 0.003
+        self.lr = 0.00025
         self.lr_decay = 0.5
         self.vocab_path = './vocab/vocab-kvret.pkl'
         self.vocab_emb = './vocab/emb-kvret.npy'
@@ -102,13 +100,13 @@ class _Config:
         self.inf_length = 5
         self.req_length = 7
         self.layer_num = 1
-        self.dropout_rate = 0.5
+        self.dropout_rate = 0.2
         self.epoch_num = 100
         self.cuda = True
         self.spv_proportion = 100
         self.alpha = 0.0
         self.max_ts = 40
-        self.early_stop_count = 20
+        self.early_stop_count = 5
         self.new_vocab = True
         self.model_path = './models/kvret.pkl'
         self.result_path = './results/kvret.csv'
@@ -122,7 +120,7 @@ class _Config:
         self.pretrain = False
         self.oov_proportion = 100
         self.emb_trainable = False
-        self.num_head = 1 #number of unique belief decoders, '=1' means that share the belief decoder among all slots, '=10' means each slot has a distinct belief decoder
+        self.num_head = 10 #number of unique belief decoders, '=1' means that share the belief decoder among all slots, '=10' means each slot has a distinct belief decoder
 
     def __str__(self):
         s = ''

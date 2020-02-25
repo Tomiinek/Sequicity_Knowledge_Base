@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 # Copyright (c) 2019 Uber Technologies, Inc.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -53,6 +55,7 @@ class Model:
                                    beam_size=cfg.beam_size,
                                    eos_token_idx=self.reader.vocab.encode('EOS_M'),
                                    vocab=self.reader.vocab,
+                                   entity_dict=self.reader.entity_dict,
                                    teacher_force=cfg.teacher_force,
                                    degree_size=cfg.degree_size,
                                    num_head=cfg.num_head,
@@ -292,8 +295,15 @@ class Model:
         prev_min_loss = 0.
         early_stop_count = cfg.early_stop_count
         train_time = 0
+        logging.debug(f"total epochs: {cfg.epoch_num}")
+
         for epoch in range(cfg.epoch_num):
-            loss_weights = [1., 1., 1., 1.]
+            logging.debug(f"epoch {epoch}")
+
+            # hardcode loss weights for KVRET from the paper
+            # TODO load this properly from the configuration file
+            loss_weights = [1., 3., 2., 0.5]
+            # loss_weights = [1., 1., 1., 1.]
             sw = time.time()
             if epoch <= self.base_epoch:
                 continue
@@ -326,13 +336,16 @@ class Model:
                                                                                     r_input=r_input,
                                                                                     loss_weights=loss_weights,
                                                                                     mode='train', **kw_ret)
+                    
                     loss.backward(retain_graph=turn_num != len(dial_batch) - 1)
                     grad = torch.nn.utils.clip_grad_norm_(self.m.parameters(), 10.0)
                     optim.step()
                     sup_loss += loss.cpu().item()
                     sup_cnt += 1
+
+                    # if sup_cnt % 20 == 0:
                     logging.debug(
-                        'loss:{} pr_loss:{} req_loss:{} res_loss:{}  m_loss:{} grad:{}'.format(loss.cpu().item(),
+                        'loss:{:.3f} pr_loss:{:.3f} req_loss:{:.3f} res_loss:{:.3f}  m_loss:{:.3f} grad:{:.3f}'.format(loss.cpu().item(),
                                                                                                pr_loss.cpu().item(),
                                                                                                req_loss.cpu().item(),
                                                                                                res_loss.cpu().item(),
@@ -374,6 +387,14 @@ class Model:
             turn_states = {}
             prev_z = None
             for turn_num, turn_batch in enumerate(dial_batch):
+
+                # u = user utterance
+                # z = reference belief state after the user utterance (with EOSes in other positions, all padded to max length)
+                # m = machine answer to u
+                # k = possible slots (for kvret everytime just 'date location weather_attribute poi_type distance event time agenda party room')
+                # i = same as z, just split into separate tensors for each slot
+                # r = requested slots
+
                 u_input, u_input_np, z_input, m_input, m_input_np, u_len, \
                 m_len, degree_input, k_input, i_input, r_input, kw_ret, constraint_eos \
                     = self._convert_batch(turn_batch, prev_z)
@@ -404,6 +425,11 @@ class Model:
         data_iterator = self.reader.mini_batch_iterator(data)
         sup_loss, unsup_loss = 0, 0
         sup_cnt, unsup_cnt = 0, 0
+
+        # hardcode loss weights for KVRET from the paper
+        # TODO load this properly from the configuration file
+        loss_weights = [1., 3., 2., 0.5]
+
         for dial_batch in data_iterator:
             turn_states = {}
 
@@ -427,7 +453,7 @@ class Model:
                 sup_loss += loss.cpu().item()
                 sup_cnt += 1
                 logging.debug(
-                    'loss:{} pr_loss:{} req_loss:{} res_loss:{} m_loss:{}'.format(loss.cpu().item(), pr_loss.cpu().item(),
+                    'loss:{:.3f} pr_loss:{:.3f} req_loss:{:.3f} res_loss:{:.3f}  m_loss:{:.3f}'.format(loss.cpu().item(), pr_loss.cpu().item(),
                                                                                   req_loss.cpu().item(),
                                                                                   res_loss.cpu().item(),
                                                                                   m_loss.cpu().item()))
@@ -472,9 +498,9 @@ class Model:
         if cfg.separate_enc:
             self.m.z_encoder.embedding.weight.data.copy_(embedding_arr)
             self.m.z_encoder.embedding.weight.requires_grad = cfg.emb_trainable
-        for i in range(cfg.num_head):
-            self.m.z_decoders[i].emb.weight.data.copy_(embedding_arr)
-            self.m.z_decoders[i].emb.weight.requires_grad = cfg.emb_trainable
+        for idx, decoder in self.m.z_decoders.items():
+            decoder.emb.weight.data.copy_(embedding_arr)
+            decoder.emb.weight.requires_grad = cfg.emb_trainable
         self.m.req_classifiers.emb.weight.data.copy_(embedding_arr)
         self.m.req_classifiers.emb.weight.requires_grad = cfg.emb_trainable
         self.m.res_classifiers.emb.weight.data.copy_(embedding_arr)
