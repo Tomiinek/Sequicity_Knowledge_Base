@@ -215,6 +215,7 @@ class BSpanDecoder(nn.Module):
         self.ffnn_hidden = nn.Linear(hidden_size * 2 + embed_size, hidden_size)
         self.act_fn = nn.ReLU()
         self.ffnn_out = nn.Linear(hidden_size, self.slot_vocab_size)
+        self.act_fn_out = nn.ReLU()
 
         self.emb = nn.Embedding(vocab_size, embed_size)
         self.emb_ctrl = nn.Linear(embed_size, embed_size)
@@ -268,25 +269,24 @@ class BSpanDecoder(nn.Module):
         last_hidden = self.ffnn_hidden(ffnn_in)
         last_hidden = self.act_fn(last_hidden)
 
-        gen_score = self.ffnn_out(last_hidden).squeeze(0)
+        gen_score = self.ffnn_out(last_hidden)
+        gen_score = self.act_fn_out(gen_score).squeeze(0)
         gen_score = F.dropout(gen_score, self.dropout_rate)
 
         # expected output from the (former) RNN is for i_length timesteps - lets simulate it
         proba_list = []
         for i in range(i_length):
             # distribute the scores of values to their respective positions in the vocabulary
-            gen_score_full = gen_score.new_zeros((gen_score.shape[0], self.vocab_size))
+
+            # fill array by negative values to favor output from the decoder even when its zero (s.t. argmax doesn't pick a random index)
+            gen_score_full = gen_score.new_full((gen_score.shape[0], self.vocab_size), -1e-2)
 
             # copy the scores of slot values to their i-th token
-            # gen_score_full[:, self.slot_vocab_map[i]] += gen_score
-
-            # workaround because the code above does not do what is intended if the indices are repeated
             for j, column in enumerate(self.slot_vocab_map[i].tolist()):
                 gen_score_full[:, column] += gen_score[:, j]
 
             # ignore the copynet
             proba = F.softmax(gen_score_full, dim=1)
-
 
             # # copy probabilities of encoder outputs
             # u_copy_score = torch.tanh(self.proj_copy1(u_enc_out.transpose(0, 1)))  # [B,T,H]
@@ -488,8 +488,6 @@ class FSDM(nn.Module):
                                                                                             requested_7, response_7,
                                                                                             loss_weights)
 
-            # if torch.isnan(pr_loss):
-
             return loss, pr_loss, m_loss, turn_states, requested_7_loss, response_7_loss
 
         elif mode == 'test':
@@ -551,6 +549,7 @@ class FSDM(nn.Module):
         requestable_slot = kwargs.get('requestable_slot')
         requestable_key_np = kwargs.get('requestable_key_np')
         requestable_slot_np = kwargs.get('requestable_slot_np')
+        # train / valid
         if mode == 'train':
             pz_dec_outs = []
             pz_proba = []
@@ -664,7 +663,7 @@ class FSDM(nn.Module):
             pm_dec_proba = torch.stack(pm_dec_proba, dim=0)  # [T,B,V]
 
             return pz_proba, pm_dec_proba, None, req_logits, res_logits
-        # valid / test
+        # test
         else:
             i_wordindex = []
             i_dec_outs = []

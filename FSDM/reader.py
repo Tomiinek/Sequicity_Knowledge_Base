@@ -122,8 +122,11 @@ class _ReaderBase:
         def sentence_encode(self, word_list):
             return [self.encode(_) for _ in word_list]
 
-        def sentence_decode(self, index_list, eos=None):
-            l = [self.decode(_) for _ in index_list]
+        def sentence_decode(self, index_list, eos=None, pad_idx=None):
+            if pad_idx is not None:
+                l = [self.decode(x) for x in index_list if x != pad_idx]
+            else:
+                l = [self.decode(_) for _ in index_list]
             if not eos or eos not in l:
                 return ' '.join(l)
             else:
@@ -236,7 +239,6 @@ class _ReaderBase:
         :param turn_batch: dict of [i_1,i_2,...,i_b] with keys
         :return:
         """
-
         results = []
         if eos_syntax is None:
             eos_syntax = {'response': 'EOS_M', 'user': 'EOS_U', 'bspan': 'EOS_Z2'}
@@ -255,8 +257,9 @@ class _ReaderBase:
                 entry['generated_response'] = self.vocab.sentence_decode(gen_m[i], eos='EOS_M')
             else:
                 entry['generated_response'] = ''
+
             if gen_z:
-                entry['generated_bspan'] = self.vocab.sentence_decode( gen_z[i], eos='EOS_Z2')
+                entry['generated_bspan'] = self.vocab.sentence_decode( gen_z[i], eos='EOS_Z2', pad_idx=0)
             else:
                 entry['generated_bspan'] = ''
             results.append(entry)
@@ -824,7 +827,7 @@ class KvretReader(_ReaderBase):
                             entity_dict[entity.split()[0]] = entity_type
                             self.abbr_dict[entity.split()[0]] = entity
         self.entity_dict = entity_dict
-        
+
 
 
     def Lei_db_degree(self, constraints, ori_constraints, items, intent):

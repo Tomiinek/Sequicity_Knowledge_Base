@@ -339,6 +339,7 @@ class Model:
                     
                     loss.backward(retain_graph=turn_num != len(dial_batch) - 1)
                     grad = torch.nn.utils.clip_grad_norm_(self.m.parameters(), 10.0)
+
                     optim.step()
                     sup_loss += loss.cpu().item()
                     sup_cnt += 1

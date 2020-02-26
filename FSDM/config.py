@@ -85,7 +85,7 @@ class _Config:
         self.embedding_size = 50
         self.hidden_size = 256
         self.split = None
-        self.lr = 0.00025
+        self.lr = 0.0005
         self.lr_decay = 0.5
         self.vocab_path = './vocab/vocab-kvret.pkl'
         self.vocab_emb = './vocab/emb-kvret.npy'
