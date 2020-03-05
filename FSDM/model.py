@@ -300,10 +300,8 @@ class Model:
         for epoch in range(cfg.epoch_num):
             logging.debug(f"epoch {epoch}")
 
-            # hardcode loss weights for KVRET from the paper
-            # TODO load this properly from the configuration file
-            loss_weights = [1., 3., 2., 0.5]
-            # loss_weights = [1., 1., 1., 1.]
+            loss_weights = [cfg.loss_inf_w, cfg.loss_req_w, cfg.loss_res_w, cfg.loss_ans_w]
+
             sw = time.time()
             if epoch <= self.base_epoch:
                 continue
@@ -427,10 +425,8 @@ class Model:
         sup_loss, unsup_loss = 0, 0
         sup_cnt, unsup_cnt = 0, 0
 
-        # hardcode loss weights for KVRET from the paper
-        # TODO load this properly from the configuration file
-        loss_weights = [1., 3., 2., 0.5]
-
+        loss_weights = [cfg.loss_inf_w, cfg.loss_req_w, cfg.loss_res_w, cfg.loss_ans_w]
+        
         for dial_batch in data_iterator:
             turn_states = {}
 

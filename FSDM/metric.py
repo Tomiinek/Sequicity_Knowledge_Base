@@ -544,6 +544,7 @@ class KvretEvaluator(GenericEvaluator):
 
     def Lei_extract_constraint(self, z):
         z = z.split()
+
         constraint = []
         for eos in ['EOS_date', 'EOS_location', 'EOS_weather_attribute', 'EOS_poi_type', 'EOS_distance', 'EOS_event',
                     'EOS_time',

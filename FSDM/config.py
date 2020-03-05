@@ -77,6 +77,11 @@ class _Config:
         self.emb_trainable = False #make the embedding layer trainiable or not
         self.num_head = 1 #number of uniquet belief decoders, '=1' means that share the belief decoder among all slots, '=3' means each slot has a distinct belief decoder
 
+        self.loss_inf_w = 1.5
+        self.loss_req_w = 9.
+        self.loss_res_w = 8.
+        self.loss_ans_w = 0.5
+
     def _kvret_init(self):
         self.prev_z_method = 'separate'
         self.separate_enc = True
@@ -85,7 +90,7 @@ class _Config:
         self.embedding_size = 50
         self.hidden_size = 256
         self.split = None
-        self.lr = 0.0005
+        self.lr = 0.00025
         self.lr_decay = 0.5
         self.vocab_path = './vocab/vocab-kvret.pkl'
         self.vocab_emb = './vocab/emb-kvret.npy'
@@ -94,7 +99,7 @@ class _Config:
         self.test = './data/kvret/kvret_test_public.json'
         self.entity = './data/kvret/kvret_entities.json'
         self.glove_path = './data/glove/glove.6B.50d.txt'
-        self.batch_size = 8
+        self.batch_size = 50
         self.degree_size = 8
         self.z_length = 8
         self.inf_length = 5
@@ -121,6 +126,11 @@ class _Config:
         self.oov_proportion = 100
         self.emb_trainable = False
         self.num_head = 10 #number of unique belief decoders, '=1' means that share the belief decoder among all slots, '=10' means each slot has a distinct belief decoder
+
+        self.loss_inf_w = 1.
+        self.loss_req_w = 3.
+        self.loss_res_w = 2.
+        self.loss_ans_w = 0.5
 
     def __str__(self):
         s = ''

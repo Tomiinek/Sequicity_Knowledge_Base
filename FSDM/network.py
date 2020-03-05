@@ -264,6 +264,7 @@ class BSpanDecoder(nn.Module):
         else:
             context = self.attn_u(query, u_enc_out)
         '''
+
         # generate scores for slot values of this decoder
         ffnn_in = torch.cat([embed_z, context, last_hidden], 2)
         last_hidden = self.ffnn_hidden(ffnn_in)
