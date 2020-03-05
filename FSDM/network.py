@@ -272,15 +272,14 @@ class BSpanDecoder(nn.Module):
 
         gen_score = self.ffnn_out(last_hidden)
         gen_score = self.act_fn_out(gen_score).squeeze(0)
-        gen_score = F.dropout(gen_score, self.dropout_rate)
 
         # expected output from the (former) RNN is for i_length timesteps - lets simulate it
         proba_list = []
         for i in range(i_length):
-            # distribute the scores of values to their respective positions in the vocabulary
+            # distribute the scores of slot values to the respective tokens in the vocabulary
 
-            # fill array by negative values to favor output from the decoder even when its zero (s.t. argmax doesn't pick a random index)
-            gen_score_full = gen_score.new_full((gen_score.shape[0], self.vocab_size), -1e-2)
+            # fill array by negative values to favor output from the decoder even when it is zero (s.t. argmax does not pick a random index)
+            gen_score_full = gen_score.new_full((gen_score.shape[0], self.vocab_size), -1e-10)
 
             # copy the scores of slot values to their i-th token
             for j, column in enumerate(self.slot_vocab_map[i].tolist()):
@@ -488,7 +487,6 @@ class FSDM(nn.Module):
                                                                                             p_requested, p_response,
                                                                                             requested_7, response_7,
                                                                                             loss_weights)
-
             return loss, pr_loss, m_loss, turn_states, requested_7_loss, response_7_loss
 
         elif mode == 'test':
